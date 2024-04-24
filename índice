@@ -1,0 +1,327 @@
+----- Creamos la extension 
+create extension postgis;
+--- Preparamos los datos para quedarnos solo con los que necesitamos 
+-- manzanas
+---- Checamos la proyeccion de las capas 
+SELECT ST_SRID(geom) AS srid
+FROM public.manzanaz
+LIMIT 1;
+-- nuestra capa ya esta en proyección 32614 zona 14 utm 
+--- vamos a cortar las manznas para solo con las de nuestra zona de estudio
+
+CREATE TABLE manzanas_zmh AS (
+    SELECT manzanaz.*
+    FROM manzanaz 
+    JOIN zona_patrimonial ON ST_Contains(zona_patrimonial.geom, manzanaz.geom)
+);
+
+-- creamos indice espacial
+CREATE INDEX idx_manzanas_zmh_geom ON manzanas_zmh USING GIST (geom);
+
+--- verificamos que las cvegeo sean valores unicos 
+
+select count(*) from manzanas_zmh group by cvegeo order by count(*) desc;
+
+---- creamos una nueva tabla ya que de las manzanas solo  nos interesa la cvgeo 
+
+CREATE TABLE manzanas_centro AS
+SELECT cvegeo, geom
+FROM public.manzanas_zmh;
+
+-- generamos la llave primaria
+ALTER TABLE public.manzanas_centro ALTER COLUMN cvegeo SET NOT NULL;
+ALTER TABLE public.manzanas_centro ADD CONSTRAINT unique_cvegeo UNIQUE (cvegeo);
+ALTER TABLE public.manzanas_centro ADD PRIMARY KEY (cvegeo);
+
+
+--- ahora limpiamos los sitios patrimoniales 
+--- checamos proyeccion 
+SELECT ST_SRID(geom) AS srid
+FROM public.sitios_patrimoniales
+LIMIT 1;
+
+
+--- vamos a quedarnos con los monumentos de nuestra zona de estudio 
+
+CREATE TABLE sitios_zmh AS (
+    SELECT public.sitios_patrimoniales.*
+    FROM public.sitios_patrimoniales
+    JOIN public.manzanas_centro ON ST_Contains(manzanas_centro.geom, sitios_patrimoniales.geom)
+);
+
+
+--- creamos indice espacial
+
+CREATE INDEX sitios_zmh_gix ON sitios_zmh USING GIST (geom);
+
+---- checat id
+
+select count(*) from sitios_zmh  group by id order by count(*) desc;
+
+
+--- los id se repiten creamos nuevos id
+
+CREATE sequence "sitios_zmh_id_seq";
+update sitios_zmh set  id = nextval ('"sitios_zmh_id_seq"');
+
+select * from public.sitios_zmh
+
+---- generamos llave primaria 
+
+ALTER TABLE sitios_zmh
+ADD CONSTRAINT pk_sitios_zmh PRIMARY KEY ("id");
+
+--- filtramos por clasificacion
+
+CREATE TABLE sitios_zmh_clas AS
+SELECT sp_nombre, geom
+FROM sitios_zmh
+WHERE sp_nombre IN ('ACP', 'INAH', 'INBA', 'SEDUVI');
+
+--- vamos a ver cuantos sitios tenemos
+SELECT COUNT(*) AS total_elementos
+FROM sitios_zmh_clas;
+
+---- seguimos con las fracturas
+SELECT ST_SRID(geom) AS srid
+FROM public.fracturas
+LIMIT 1;
+
+--- estamos rn la proyeccion correcta
+--- vamos  a hacer el clip
+
+CREATE TABLE fracturas_zmh AS (
+    SELECT public.fracturas.*
+    FROM public.fracturas
+    JOIN public.manzanas_centro ON ST_Contains(manzanas_centro.geom, fracturas.geom)
+);
+
+
+---- indice espacial
+CREATE INDEX idx_fracturas_zmh_geom ON fracturas_zmh USING GIST (geom);
+
+---- verificer los id
+select count(*) from public.fracturas_zmh group by id order by count(*) desc;
+
+-- nuestros id no se repiten entonces los hacemos llaves primarias
+
+ALTER TABLE fracturas_zmh
+ADD CONSTRAINT pk_fracturas_zmh PRIMARY KEY (id);
+
+---- siguen las fallas como ya es costumbre verificamos que esten en proyeccion correcta 
+
+SELECT ST_SRID(geom) AS srid
+from public.fallas
+LIMIT 1;
+--- proyeccion 
+ALTER TABLE fallas
+ALTER COLUMN geom
+TYPE Geometry(LineString, 32614)
+USING ST_Transform(geom, 32614);
+---- cortamos 
+CREATE TABLE fallas_zmh AS (
+    select public.fallas .*
+    FROM  public.fallas
+    JOIN public.manzanas_centro ON ST_Contains(manzanas_centro.geom, fallas.geom)
+    
+    
+ 
+    
+    
+    
+    
+    
+    
+    ---inundaciones 
+    ---checar proyeccion 
+SELECT ST_SRID(geom) AS srid
+FROM public.inundaciones
+LIMIT 1;
+--- esta correcta
+---- quedamos con las de las manzanaz
+
+CREATE TABLE inundaciones_zmh AS (
+    SELECT public.inundaciones.*
+    FROM public.inundaciones
+    JOIN public.manzanas_centro ON ST_Contains(manzanas_centro.geom, inundaciones.geom)
+);
+
+
+
+---- encharmamientos 
+
+
+SELECT e.*
+FROM public.encharcamientos e
+JOIN public.zona_patrimonial z ON ST_Intersects(z.geom, e.geom);
+
+CREATE TABLE encharcamientos_zmh AS
+SELECT e.*
+FROM public.encharcamientos e
+JOIN public.zona_patrimonial z ON ST_Contains(z.geom, e.geom)
+WHERE ST_Contains(z.geom, e.geom);
+
+
+
+drop table public.encharcamientos_zmh
+
+
+----------- en que manzanas hay algun riesgo
+
+
+select * from public.manzanas_centro
+----- fracturas
+ALTER TABLE manzanas_centro
+ADD COLUMN tiene_fracturas VARCHAR(2);
+
+UPDATE manzanas_centro
+SET tiene_fracturas = CASE
+    WHEN EXISTS (SELECT 1 FROM fracturas_zmh f WHERE ST_Contains(manzanas_centro.geom, f.geom))
+    THEN 'si'
+    ELSE 'no'
+    END;
+   ----- inundaciones
+   
+   
+   
+  ALTER TABLE manzanas_centro
+ADD COLUMN inundacion VARCHAR(2);
+
+UPDATE manzanas_centro
+SET inundacion = CASE
+    WHEN EXISTS (SELECT 1 FROM inundaciones_zmh i WHERE ST_Intersects(manzanas_centro.geom, i.geom))
+    THEN 'si'
+    ELSE 'no'
+    END;
+
+---- encharcamientos 
+   --- generamos buffer
+   
+   CREATE TABLE encharcamientos_buffer AS
+SELECT id, ST_Buffer(geom, 2) AS geom
+
+
+
+
+---- ahora cuales manzanaz tienn encharcamientos 
+
+ALTER TABLE manzanas_centro
+ADD COLUMN encharcamiento VARCHAR(2);
+
+UPDATE manzanas_centro
+SET encharcamiento = CASE
+    WHEN EXISTS (SELECT 1 FROM encharcamientos_buffer b WHERE ST_Intersects(manzanas_centro.geom, b.geom))
+    THEN 'si'
+    ELSE 'no'
+    END;
+-----zona sismica
+   
+  ALTER TABLE manzanas_centro
+ADD COLUMN zona_sismica VARCHAR;
+
+UPDATE manzanas_centro AS m
+SET zona_sismica = z.zona
+FROM zona_sismica AS z
+WHERE ST_Contains(z.geom, m.geom);
+
+
+---- cuantos monumentos haypor manzana 
+
+
+
+
+ALTER TABLE manzanas_centro
+ADD COLUMN monumentos INT;
+
+UPDATE manzanas_centro AS m
+SET monumentos = (
+    SELECT COUNT(s.*)
+    FROM public.sitios_zmh_clas AS s
+    WHERE ST_Contains(m.geom, s.geom)
+);
+
+
+select*from  manzanas_centro mc 
+
+---- ponderacion 
+
+ALTER TABLE manzanas_centro
+ADD COLUMN c_fracturas INTEGER;
+
+UPDATE manzanas_centro
+SET c_fracturas = CASE
+    WHEN tiene_frac = 'si' THEN 1
+    WHEN tiene_frac = 'no' THEN 0
+    ELSE NULL  -- Manejo de valores desconocidos o nulos
+END;
+
+--- inundacion
+
+
+ALTER TABLE manzanas_centro
+ADD COLUMN c_inundacion INTEGER;
+
+UPDATE manzanas_centro
+SET c_inundacion = CASE
+    WHEN inundacion  = 'si' THEN 1
+    WHEN inundacion  = 'no' THEN 0
+    ELSE null
+    end;
+---enchacamientos
+
+ ALTER TABLE manzanas_centro
+ADD COLUMN c_enchar INTEGER;
+
+UPDATE manzanas_centro
+SET c_enchar = CASE
+    WHEN encharcami  = 'si' THEN 1
+    WHEN encharcami  = 'no' THEN 0
+    ELSE null
+    end;  
+  
+   --- fallas
+   
+   ALTER TABLE manzanas_centro
+ADD COLUMN c_fallas INTEGER;
+
+UPDATE manzanas_centro
+SET c_fallas = CASE
+    WHEN fallas  = 'si' THEN 1
+    WHEN fallas  = 'no' THEN 0
+    ELSE null
+    end;  
+    
+ ---- zona sismica 
+ 
+   -- Añadir una nueva columna a la tabla
+ALTER TABLE manzanas_centro
+ADD COLUMN c_sis NUMERIC;
+
+-- Actualizar los valores de la nueva columna basados en los valores de la columna zona_sismi
+
+ALTER TABLE manzanas_centro
+ADD COLUMN c_sis numeric;
+
+UPDATE manzanas_centro
+SET c_fallas = CASE   
+	 WHEN zona_sismi = 'Zona lll(b)' THEN 0.82
+    WHEN zona_sismi = 'Zona lll(b)' THEN 0.91
+    ELSE NULL -- Manejo de otros valores
+END;
+END
+
+
+
+
+
+---- indicador
+
+ALTER TABLE mzn_centro
+ADD COLUMN indice NUMERIC;
+
+UPDATE mzn_centro
+SET indice = (c_fractura + c_inundaci  + c_enchar + c_fallas + c_sis) / 5.0;
+
+
+
+select * from mzn_centro mc 
